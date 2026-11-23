@@ -1,20 +1,44 @@
 # drvjava
 
-Turn a version 3 `rules_jvm_external` lockfile into a JVM classpath. The Rust planner follows the selected dependency edges, including classifier-specific edges. Nix downloads each JAR from its locked repositories and checks its SHA-256.
+Build, test, and run a Java project directly from its version 3 `rules_jvm_external` lockfile. The Rust planner selects the dependency closure, and Nix fetches each JAR by its locked SHA-256. Editing the native lockfile is enough to change dependencies.
+
+From a project with `maven_install.json`, sources in `src/main/java`, and JUnit Platform Console on its locked classpath, run
 
 ```sh
-nix run github:drvlang/drvjava -- build -C ./app
-javac -cp "$(cat result/classpath)" Example.java
+nix run github:drvlang/drvjava -- build
+nix run github:drvlang/drvjava -- test
+nix run github:drvlang/drvjava -- run -- com.example.Main hello
 ```
 
-The default lockfile is `maven_install.json`. To select one dependency tree, pass `--options '{"roots":["com.google.guava:guava"]}'`. For another lockfile, add `"lockFile":"deps_install.json"` to the same object. The output also contains Maven-layout files under `jars/`. The builder produces a JAR classpath. Android AARs and private/local repositories are outside its current scope.
+The result contains `lib/project.jar`, a `classpath` file, Maven-layout dependencies under `jars/`, and a Java launcher. Use `--options '{"mainClass":"com.example.Main"}'` to select a default entry point. For a test suite with its own Java main method, use `--options '{"testClass":"com.example.MainTest"}'`. Arguments after `--` go to the program or test runner.
 
-Use `drvjava.lib.mkFlake { src = ./app; }` in a downstream flake or `lib.mkPackage { system, src, roots, ... }` in a package expression. Nix reads the Rust planner output during evaluation. To inspect the plan directly, run `nix run github:drvlang/drvjava#plan -- maven_install.json com.google.guava:guava`.
+## Flakes and monorepos
+
+Use `drvjava.lib.mkFlake { src = ./.; mainClass = "com.example.Main"; }` for one project. For several programs, put the member map in the repository's `drvlang.json` so the CLI and flake share the same names.
+
+```json
+{"commands":{"api":"apps/api","worker":"apps/worker"}}
+```
+
+```nix
+{
+  inputs.drvjava.url = "github:drvlang/drvjava";
+  outputs = { self, drvjava }: drvjava.lib.mkMonorepoFlake {
+    src = ./.;
+    extraSourceDirs = [ "pkg/common/src/main/java" ];
+  };
+}
+```
+
+`nix build .#api`, `nix flake check`, and `nix run .#api -- com.example.Api` select member sources and the shared code. The CLI equivalent for the build is `build api --options '{"extraSourceDirs":["pkg/common/src/main/java"]}'`. Each member may supply its own lock or inherit the root lock. Set `roots` to a list of Maven coordinates to fetch only their transitive dependencies. Set `lockFile` to choose a different repository-relative lock path. This builder supports public HTTPS repositories and JAR dependencies on x86-64 and AArch64 Linux.
+
+Enable these Nix settings on the client and build daemon, then restart the daemon after changing its configuration.
+
+```ini
+extra-experimental-features = nix-command flakes ca-derivations dynamic-derivations recursive-nix
+extra-system-features = recursive-nix ca-derivations
+```
 
 ## Benchmark
 
-The benchmark compiles and executes Bazel's upstream `IndexJar` utility. Four roots select six JARs from its 169-artifact lockfile. The check indexes the compiled program's own JAR and verifies the class list. [Benchmark definition](benchmarks/default.nix) · [Upstream source](https://github.com/bazel-contrib/rules_jvm_external/tree/1ba9a81c928ca28ff4b592e7b20d131ba9b9a431)
-
-```sh
-nix run github:drvlang/drvjava#bench -- --runs 5
-```
+`nix run github:drvlang/drvjava#bench -- --runs 5` runs Bazel's IndexJar utility against its own compiled JAR and checks the class list. Four locked roots select six JARs from 169 artifacts. The Rust runner warms the build, then times each rebuild of the runtime check. [Benchmark definition](benchmarks/default.nix) · [Pinned upstream source](https://github.com/bazel-contrib/rules_jvm_external/tree/1ba9a81c928ca28ff4b592e7b20d131ba9b9a431)

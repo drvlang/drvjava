@@ -1,0 +1,13 @@
+{
+  "version": "3",
+  "artifacts": {
+    "org.junit.platform:junit-platform-console-standalone": {
+      "version": "1.12.2",
+      "shasums": { "jar": "329bd10288875a74d04c9ca6b7c9889c265ddf87b21a9ea42a7f7392f391472a" }
+    }
+  },
+  "repositories": {
+    "https://repo.maven.apache.org/maven2/": [ "org.junit.platform:junit-platform-console-standalone" ]
+  },
+  "dependencies": {}
+}
