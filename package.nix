@@ -64,6 +64,7 @@ let
     }
   '';
 in pkgs.stdenvNoCC.mkDerivation {
+  __contentAddressed = true;
   name = if test then "drvjava-test" else "drvjava-build";
   src = source;
   nativeBuildInputs = [ jdk pkgs.makeWrapper ];

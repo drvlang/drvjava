@@ -13,7 +13,10 @@ let
     ];
     mainClass = "com.github.bazelbuild.rules_jvm_external.jar.IndexJar";
   };
-in pkgs.runCommand "drvjava-indexjar-test" { nativeBuildInputs = [ pkgs.jq ]; } ''
+in pkgs.runCommand "drvjava-indexjar-test" {
+  __contentAddressed = true;
+  nativeBuildInputs = [ pkgs.jq ];
+} ''
   ln -s ${indexer}/lib/project.jar indexed.jar
   echo indexed.jar > args
   ${indexer}/bin/drvjava-run --argsfile args > "$out"

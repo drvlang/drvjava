@@ -9,16 +9,25 @@
     mkPackage = import ./package.nix { inherit drvkit; };
     mkTest = import ./package.nix { inherit drvkit; test = true; };
     selectTarget = { src, name, target }: { inherit src; projectDir = target; };
-    extraChecks = system: {
-      benchmark = import ./benchmarks { pkgs = nixpkgs.legacyPackages.${system}; inherit self system; };
-      junit = (self.lib.mkMonorepoFlake {
+    extraChecks = system: let
+      pkgs = nixpkgs.legacyPackages.${system};
+      workspace = self.lib.mkMonorepoFlake {
         inherit (builtins.fromJSON (builtins.readFile ./tests/drvlang.json)) commands;
         srcForTarget = { target, ... }: self.lib.projectSource {
           root = ./tests;
           files = [ (./tests + "/${target}") ./tests/pkg/common ./tests/maven_install.json ];
         };
         extraSourceDirs = [ "pkg/common" ];
-      }).checks.${system}.api;
+      };
+      package = workspace.packages.${system}.api;
+      rebuilt = package.overrideAttrs { DRVLANG_REBUILD_CHECK = "1"; };
+    in {
+      benchmark = import ./benchmarks { inherit pkgs self system; };
+      junit = workspace.checks.${system}.api;
+      content-addressing = pkgs.runCommand "drvjava-check-content-addressing" { __contentAddressed = true; } ''
+        test ${package} = ${rebuilt}
+        touch "$out"
+      '';
     };
   };
   in tools // {

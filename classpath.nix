@@ -4,6 +4,13 @@ let
     inherit (j) urls sha256;
     name = builtins.baseNameOf j.path;
   }) jars;
-in pkgs.linkFarm "drvjava-jars" ([
-  { name = "classpath"; path = pkgs.writeText "classpath" (pkgs.lib.concatStringsSep ":" files); }
-] ++ pkgs.lib.zipListsWith (j: path: { name = "jars/" + j.path; inherit path; }) jars files)
+  classpath = pkgs.writeTextFile {
+    name = "classpath";
+    text = pkgs.lib.concatStringsSep ":" files;
+    derivationArgs.__contentAddressed = true;
+  };
+in (pkgs.linkFarm "drvjava-jars" ([
+  { name = "classpath"; path = classpath; }
+] ++ pkgs.lib.zipListsWith (j: path: { name = "jars/" + j.path; inherit path; }) jars files)).overrideAttrs {
+  __contentAddressed = true;
+}

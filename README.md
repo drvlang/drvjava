@@ -1,6 +1,6 @@
 # drvjava
 
-Build, test, and run a Java project directly from its version 3 `rules_jvm_external` lockfile. The Rust planner selects the dependency closure, and Nix fetches each JAR by its locked SHA-256. Editing the native lockfile is enough to change dependencies.
+Build, test, and run a Java project directly from its version 3 `rules_jvm_external` lockfile. The Rust planner selects the dependency closure, and Nix fetches each JAR by its locked SHA-256. Editing the native lockfile is enough to change dependencies. Generated classpaths and build outputs are content-addressed, so builds of a target that produce identical files and store references reuse the same store path.
 
 From a project with `maven_install.json`, sources in `src/main/java`, and JUnit Platform Console on its locked classpath, run
 
