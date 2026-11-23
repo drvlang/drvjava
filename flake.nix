@@ -18,6 +18,7 @@
           files = [ (./tests + "/${target}") ./tests/pkg/common ./tests/maven_install.json ];
         };
         extraSourceDirs = [ "pkg/common" ];
+        testRoots = [ "org.junit.platform:junit-platform-console-standalone" ];
       };
       package = workspace.packages.${system}.api;
       rebuilt = package.overrideAttrs { DRVLANG_REBUILD_CHECK = "1"; };
@@ -26,6 +27,7 @@
       junit = workspace.checks.${system}.api;
       content-addressing = pkgs.runCommand "drvjava-check-content-addressing" { __contentAddressed = true; } ''
         test ${package} = ${rebuilt}
+        test -z "$(ls -A ${package}/jars)"
         touch "$out"
       '';
     };

@@ -1,6 +1,6 @@
 { drvkit, test ? false }:
 pkgs:
-{ src, projectDir ? ".", lockFile ? null, roots ? [], mainClass ? null,
+{ src, projectDir ? ".", lockFile ? null, roots ? [], testRoots ? [], mainClass ? null,
   sourceDirs ? [ "${projectDir}/src/main/java" ], extraSourceDirs ? [], sources ? [],
   resourceDirs ? [ "${projectDir}/src/main/resources" ],
   testDirs ? [ "${projectDir}/src/test/java" ], testResourceDirs ? [ "${projectDir}/src/test/resources" ],
@@ -19,17 +19,17 @@ let
         in lib.any (wanted: file == wanted || lib.hasPrefix (wanted + "/") file ||
           (type == "directory" && lib.hasPrefix (file + "/") wanted)) selected;
     };
-  source = selectFiles "drvjava-source" (mainSources ++ resourceDirs ++ lib.optionals test (testDirs ++ testResourceDirs));
   planner = import ./planner.nix pkgs;
   memberLock = "${projectDir}/maven_install.json";
   lockSource = selectFiles "drvjava-lock" (if lockFile == null then [ memberLock "maven_install.json" ] else [ lockFile ]);
   dynamic = import (drvkit + "/dynamic.nix") { inherit pkgs; };
-  classpath = dynamic {
+  classpathFor = selectedRoots: dynamic {
     name = "drvjava-classpath";
     prepare = ''
       lock=${lib.escapeShellArg (if lockFile == null then memberLock else lockFile)}
       ${lib.optionalString (lockFile == null) ''if [[ ! -f ${lockSource}/"$lock" ]]; then lock=maven_install.json; fi''}
-      ${planner}/bin/drvjava-plan ${lockSource}/"$lock" ${lib.escapeShellArgs roots} > plan.json
+      ${planner}/bin/drvjava-plan ${lockSource}/"$lock" \
+        ${lib.optionalString (testRoots != [] && selectedRoots == []) "--explicit-roots"} ${lib.escapeShellArgs selectedRoots} > plan.json
     '';
     expression = ''
       import ${./classpath.nix} {
@@ -38,6 +38,8 @@ let
       }
     '';
   };
+  classpath = classpathFor roots;
+  testClasspath = if testRoots == [] then classpath else classpathFor (roots ++ testRoots);
   compile = ''
     compile() {
       local dest=$1 cp=$2
@@ -63,43 +65,61 @@ let
       done
     }
   '';
-in pkgs.stdenvNoCC.mkDerivation {
+  compileClasses = { name, dirs, resourcePaths, dependencyPath, requiredSources ? [] }:
+    pkgs.stdenvNoCC.mkDerivation {
+      inherit name;
+      __contentAddressed = true;
+      src = selectFiles "drvjava-source" (dirs ++ resourcePaths);
+      nativeBuildInputs = [ jdk ];
+      dontConfigure = true;
+      dontFixup = true;
+      dontInstall = true;
+      buildPhase = ''
+        ${compile}
+        for f in ${lib.escapeShellArgs requiredSources}; do
+          if [[ ! -f "$f" ]]; then echo "missing Java source: $f" >&2; exit 1; fi
+        done
+        compile "$out" "${dependencyPath}" ${lib.escapeShellArgs dirs}
+        resources "$out" ${lib.escapeShellArgs resourcePaths}
+      '';
+    };
+  mainClasses = compileClasses {
+    name = "drvjava-main-classes";
+    dirs = mainSources;
+    resourcePaths = resourceDirs;
+    dependencyPath = "$(cat ${classpath}/classpath)";
+    requiredSources = sources;
+  };
+  testDependencies = "${mainClasses}:$(cat ${testClasspath}/classpath)";
+  testClasses = compileClasses {
+    name = "drvjava-test-classes";
+    dirs = testDirs;
+    resourcePaths = testResourceDirs;
+    dependencyPath = testDependencies;
+  };
+in if test then pkgs.runCommand "drvjava-test" {
   __contentAddressed = true;
-  name = if test then "drvjava-test" else "drvjava-build";
-  src = source;
+  nativeBuildInputs = [ jdk ];
+} ''
+  cd "$TMPDIR"
+  java -ea -cp "${testClasses}:${testDependencies}" ${if testClass == null
+    then "org.junit.platform.console.ConsoleLauncher execute --scan-class-path --fail-if-no-tests"
+    else lib.escapeShellArg testClass} ${lib.escapeShellArgs testArgs}
+  touch "$out"
+'' else pkgs.runCommand "drvjava-build" {
+  __contentAddressed = true;
   nativeBuildInputs = [ jdk pkgs.makeWrapper ];
-  dontConfigure = true;
-  dontFixup = true;
-  dontInstall = true;
-  buildPhase = ''
-    ${compile}
-    cp=$(cat ${classpath}/classpath)
-    classes="$TMPDIR/main-classes"
-    for f in ${lib.escapeShellArgs sources}; do
-      if [[ ! -f "$f" ]]; then echo "missing Java source: $f" >&2; exit 1; fi
-    done
-    compile "$classes" "$cp" ${lib.escapeShellArgs mainSources}
-    resources "$classes" ${lib.escapeShellArgs resourceDirs}
-  '' + (if test then ''
-    tests="$TMPDIR/test-classes"
-    compile "$tests" "$classes:$cp" ${lib.escapeShellArgs testDirs}
-    resources "$tests" ${lib.escapeShellArgs testResourceDirs}
-    cd "$TMPDIR"
-    java -ea -cp "$tests:$classes:$cp" ${if testClass == null
-      then "org.junit.platform.console.ConsoleLauncher execute --scan-class-path --fail-if-no-tests"
-      else lib.escapeShellArg testClass} ${lib.escapeShellArgs testArgs}
-    touch "$out"
-  '' else ''
-    mkdir -p "$out/bin" "$out/lib" "$out/jars"
-    if [[ -d ${classpath}/jars ]]; then
-      rmdir "$out/jars"
-      ln -s ${classpath}/jars "$out/jars"
-    fi
-    jar --create --file "$out/lib/project.jar" --date=1980-01-01T00:00:02Z \
-      ${lib.optionalString (mainClass != null) "--main-class ${lib.escapeShellArg mainClass}"} -C "$classes" .
-    printf '%s' "$out/lib/project.jar''${cp:+:$cp}" > "$out/classpath"
-    makeWrapper ${jdk}/bin/java "$out/bin/drvjava-run" \
-      --add-flag "-cp" --add-flag "$(cat "$out/classpath")" \
-      ${lib.optionalString (mainClass != null) "--add-flag ${lib.escapeShellArg mainClass}"}
-  '');
-}
+} ''
+  cp=$(cat ${classpath}/classpath)
+  mkdir -p "$out/bin" "$out/lib" "$out/jars"
+  if [[ -d ${classpath}/jars ]]; then
+    rmdir "$out/jars"
+    ln -s ${classpath}/jars "$out/jars"
+  fi
+  jar --create --file "$out/lib/project.jar" --date=1980-01-01T00:00:02Z \
+    ${lib.optionalString (mainClass != null) "--main-class ${lib.escapeShellArg mainClass}"} -C ${mainClasses} .
+  printf '%s' "$out/lib/project.jar''${cp:+:$cp}" > "$out/classpath"
+  makeWrapper ${jdk}/bin/java "$out/bin/drvjava-run" \
+    --add-flag "-cp" --add-flag "$(cat "$out/classpath")" \
+    ${lib.optionalString (mainClass != null) "--add-flag ${lib.escapeShellArg mainClass}"}
+''

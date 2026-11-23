@@ -30,7 +30,11 @@ fn component(s: &str) -> bool {
         && s.bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"._+-".contains(&c))
 }
-fn plan(lock: Lock, roots: Vec<String>) -> Result<BTreeMap<String, Jar>, String> {
+fn plan(
+    lock: Lock,
+    roots: Vec<String>,
+    include_all: bool,
+) -> Result<BTreeMap<String, Jar>, String> {
     if lock.version != "3" {
         return Err("expected rules_jvm_external lock version 3".into());
     }
@@ -80,7 +84,7 @@ fn plan(lock: Lock, roots: Vec<String>) -> Result<BTreeMap<String, Jar>, String>
         }
     }
     let skipped = lock.skipped.into_iter().collect::<BTreeSet<_>>();
-    let mut queue: VecDeque<_> = if roots.is_empty() {
+    let mut queue: VecDeque<_> = if roots.is_empty() && include_all {
         artifacts
             .iter()
             .filter(|(k, (ext, _, _))| {
@@ -135,9 +139,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let file = args
         .next()
         .ok_or("usage: drvjava-plan LOCKFILE [GROUP:ARTIFACT ...]")?;
+    let mut roots = args.peekable();
+    let include_all = roots.next_if(|arg| arg == "--explicit-roots").is_none();
     let result = plan(
-        serde_json::from_reader(fs::File::open(file)?)?,
-        args.collect(),
+        serde_json::from_slice(&fs::read(file)?)?,
+        roots.collect(),
+        include_all,
     )?;
     serde_json::to_writer(std::io::stdout().lock(), &result)?;
     Ok(())

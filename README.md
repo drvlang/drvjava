@@ -12,6 +12,8 @@ nix run github:drvlang/drvjava -- run -- com.example.Main hello
 
 The result contains `lib/project.jar`, a `classpath` file, Maven-layout dependencies under `jars/`, and a Java launcher. Use `--options '{"mainClass":"com.example.Main"}'` to select a default entry point. For a test suite with its own Java main method, use `--options '{"testClass":"com.example.MainTest"}'`. Arguments after `--` go to the program or test runner.
 
+Builds and tests share compiled production classes. Changing a test filter reuses the compiled tests too. Set `testRoots` to Maven coordinates used only by tests, such as `org.junit.platform:junit-platform-console-standalone`. With `testRoots` set, `roots` lists just the production dependencies and can be empty.
+
 ## Flakes and monorepos
 
 For one project, pass `src = drvjava.lib.projectSource { root = ./.; files = [ ./src ./maven_install.json ]; };` and `mainClass = "com.example.Main";` to `drvjava.lib.mkFlake`. For several programs, put the member map in the repository's `drvlang.json` so the CLI and flake share the same names.
