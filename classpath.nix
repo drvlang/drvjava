@@ -6,6 +6,7 @@ let
   }) jars;
   classpath = pkgs.writeTextFile {
     name = "classpath";
+    allowSubstitutes = true;
     text = pkgs.lib.concatStringsSep ":" files;
     derivationArgs.__contentAddressed = true;
   };
@@ -13,4 +14,5 @@ in (pkgs.linkFarm "drvjava-jars" ([
   { name = "classpath"; path = classpath; }
 ] ++ pkgs.lib.zipListsWith (j: path: { name = "jars/" + j.path; inherit path; }) jars files)).overrideAttrs {
   __contentAddressed = true;
+  allowSubstitutes = true;
 }
