@@ -14,7 +14,7 @@ The result contains `lib/project.jar`, a `classpath` file, Maven-layout dependen
 
 ## Flakes and monorepos
 
-Use `drvjava.lib.mkFlake { src = ./.; mainClass = "com.example.Main"; }` for one project. For several programs, put the member map in the repository's `drvlang.json` so the CLI and flake share the same names.
+For one project, pass `src = drvjava.lib.projectSource { root = ./.; files = [ ./src ./maven_install.json ]; };` and `mainClass = "com.example.Main";` to `drvjava.lib.mkFlake`. For several programs, put the member map in the repository's `drvlang.json` so the CLI and flake share the same names.
 
 ```json
 {"commands":{"api":"apps/api","worker":"apps/worker"}}
@@ -24,7 +24,11 @@ Use `drvjava.lib.mkFlake { src = ./.; mainClass = "com.example.Main"; }` for one
 {
   inputs.drvjava.url = "github:drvlang/drvjava";
   outputs = { self, drvjava }: drvjava.lib.mkMonorepoFlake {
-    src = ./.;
+    inherit (builtins.fromJSON (builtins.readFile ./drvlang.json)) commands;
+    srcForTarget = { target, ... }: drvjava.lib.projectSource {
+      root = ./.;
+      files = [ (./. + "/${target}") ./pkg/common ./maven_install.json ];
+    };
     extraSourceDirs = [ "pkg/common/src/main/java" ];
   };
 }

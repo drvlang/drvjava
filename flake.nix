@@ -12,7 +12,11 @@
     extraChecks = system: {
       benchmark = import ./benchmarks { pkgs = nixpkgs.legacyPackages.${system}; inherit self system; };
       junit = (self.lib.mkMonorepoFlake {
-        src = ./tests;
+        inherit (builtins.fromJSON (builtins.readFile ./tests/drvlang.json)) commands;
+        srcForTarget = { target, ... }: self.lib.projectSource {
+          root = ./tests;
+          files = [ (./tests + "/${target}") ./tests/pkg/common ./tests/maven_install.json ];
+        };
         extraSourceDirs = [ "pkg/common" ];
       }).checks.${system}.api;
     };

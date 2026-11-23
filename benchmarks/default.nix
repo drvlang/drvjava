@@ -1,15 +1,16 @@
 { self, pkgs, system }:
 let
-  src = (import ./source.nix).outPath;
+  root = /. + builtins.unsafeDiscardStringContext (import ./source.nix).outPath;
   dir = "private/tools/java/com/github/bazelbuild/rules_jvm_external/jar";
+  lockFile = "rules_jvm_external_deps_install.json";
+  sources = map (name: "${dir}/${name}.java") [ "IndexJar" "KotlinTopLevel" "PerJarIndexResults" ];
   indexer = self.lib.mkPackage {
-    inherit system src;
-    lockFile = "rules_jvm_external_deps_install.json";
+    inherit system sources lockFile;
+    src = self.lib.projectSource { inherit root; files = map (p: root + ("/" + p)) ([ lockFile ] ++ sources); };
     roots = [
       "com.google.code.gson:gson" "org.jetbrains.kotlin:kotlin-metadata-jvm"
       "org.jetbrains.kotlin:kotlin-stdlib" "org.ow2.asm:asm"
     ];
-    sources = map (name: "${dir}/${name}.java") [ "IndexJar" "KotlinTopLevel" "PerJarIndexResults" ];
     mainClass = "com.github.bazelbuild.rules_jvm_external.jar.IndexJar";
   };
 in pkgs.runCommand "drvjava-indexjar-test" { nativeBuildInputs = [ pkgs.jq ]; } ''
