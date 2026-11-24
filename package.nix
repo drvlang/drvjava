@@ -1,4 +1,4 @@
-{ drvkit, test ? false }:
+{ drvkit, nixpkgs ? null, test ? false }:
 pkgs:
 { src, projectDir ? ".", lockFile ? null, roots ? [], testRoots ? [], mainClass ? null,
   sourceDirs ? [ "${projectDir}/src/main/java" ], extraSourceDirs ? [], sources ? [],
@@ -7,6 +7,7 @@ pkgs:
   testClass ? null, testArgs ? [], jdk ? pkgs.jdk_headless }:
 let
   inherit (pkgs) lib;
+  nixpkgsSource = import (drvkit + "/nixpkgs-source.nix") pkgs nixpkgs;
   mainSources = sourceDirs ++ extraSourceDirs ++ sources;
   root = toString (src.origSrc or src);
   absolute = p: let rel = lib.removePrefix "./" (lib.path.subpath.normalise p);
@@ -33,7 +34,7 @@ let
     '';
     expression = ''
       import ${./classpath.nix} {
-        pkgs = import ${pkgs.path} { system = "${pkgs.stdenv.hostPlatform.system}"; };
+        pkgs = import ${nixpkgsSource} { system = "${pkgs.stdenv.hostPlatform.system}"; };
         jars = builtins.attrValues (builtins.fromJSON (builtins.readFile ./plan.json));
       }
     '';
