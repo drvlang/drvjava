@@ -5,6 +5,14 @@
 
   outputs = { self, nixpkgs, drvkit, ... }: let tools = import drvkit {
     inherit self nixpkgs;
+    toolSource = {
+      root = ./.;
+      files = [
+        ./classpath.nix ./package.nix ./planner.nix ./planner/Cargo.toml
+        ./planner/Cargo.lock ./planner/src
+      ];
+      benchmarkFiles = [ ./benchmarks/default.nix ./benchmarks/source.nix ];
+    };
     name = "drvjava";
     mkPackage = import ./package.nix { inherit drvkit nixpkgs; };
     mkTest = import ./package.nix { inherit drvkit nixpkgs; test = true; };
