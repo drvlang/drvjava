@@ -1,4 +1,4 @@
-{ drvkit, nixpkgs ? null, test ? false }:
+{ drvkit ? null, nixpkgs ? null, test ? false }:
 pkgs:
 { src, projectDir ? ".", lockFile ? null, roots ? [], testRoots ? [], mainClass ? null,
   sourceDirs ? [ "${projectDir}/src/main/java" ], extraSourceDirs ? [], sources ? [],
@@ -7,7 +7,43 @@ pkgs:
   testClass ? null, testArgs ? [], jdk ? pkgs.jdk_headless }:
 let
   inherit (pkgs) lib;
-  nixpkgsSource = import (drvkit + "/nixpkgs-source.nix") pkgs nixpkgs;
+  system = pkgs.stdenv.hostPlatform.system;
+
+  mkOverridableDrv = attrs: let d = builtins.derivation attrs; in d // {
+    overrideAttrs = f: mkOverridableDrv (attrs // (if builtins.isFunction f then f attrs else f));
+  };
+
+  # Input-addressed slim JDK slice: drops jmods/ (~307 MiB) and lib/src.zip (~52 MiB),
+  # rewriting embedded store paths in-place (exact same name length) so there is zero
+  # runtime reference to the full openjdk-headless store path.
+  jdkNameLen = builtins.stringLength jdk.name;
+  slimName = let base = "drvjava-jdk-slim-"; in
+    if jdkNameLen > builtins.stringLength base
+    then base + lib.concatStrings (builtins.genList (_: "0") (jdkNameLen - builtins.stringLength base))
+    else builtins.substring 0 jdkNameLen "drvjava-jdk-slim";
+
+  jdkSlim = if pkgs.stdenv.hostPlatform.isLinux && jdk == pkgs.jdk_headless then builtins.derivation {
+    name = slimName;
+    inherit system;
+    builder = "${jdk}/bin/java";
+    args = [ ./DrvJava.java "slice-jdk" ];
+    FULL_JDK = "${jdk}";
+    allowSubstitutes = true;
+  } else jdk;
+
+  # Input-addressed precompiled helper JAR (zero external crates, ~0.5 s compile once).
+  toolJar = builtins.derivation {
+    name = "drvjava-tool";
+    inherit system;
+    builder = "${pkgs.bashNonInteractive}/bin/bash";
+    args = [ "-e" "-c" ''
+      "${jdkSlim}/bin/javac" -encoding UTF-8 -d "$TMPDIR/classes" "${./DrvJava.java}"
+      "${pkgs.coreutils}/bin/mkdir" -p "$out"
+      "${jdkSlim}/bin/jar" --create --file "$out/drvjava.jar" --date=1980-01-01T00:00:02Z -C "$TMPDIR/classes" .
+    '' ];
+    allowSubstitutes = true;
+  };
+
   mainSources = sourceDirs ++ extraSourceDirs ++ sources;
   root = toString (src.origSrc or src);
   absolute = p: let rel = lib.removePrefix "./" (lib.path.subpath.normalise p);
@@ -20,107 +56,88 @@ let
         in lib.any (wanted: file == wanted || lib.hasPrefix (wanted + "/") file ||
           (type == "directory" && lib.hasPrefix (file + "/") wanted)) selected;
     };
-  planner = import ./planner.nix pkgs;
+
   memberLock = "${projectDir}/maven_install.json";
   lockSource = selectFiles "drvjava-lock" (if lockFile == null then [ memberLock "maven_install.json" ] else [ lockFile ]);
-  dynamic = import (drvkit + "/dynamic.nix") { inherit pkgs; };
-  classpathFor = selectedRoots: dynamic {
-    name = "drvjava-classpath";
-    prepare = ''
-      lock=${lib.escapeShellArg (if lockFile == null then memberLock else lockFile)}
-      ${lib.optionalString (lockFile == null) ''if [[ ! -f ${lockSource}/"$lock" ]]; then lock=maven_install.json; fi''}
-      ${planner}/bin/drvjava-plan ${lockSource}/"$lock" \
-        ${lib.optionalString (testRoots != [] && selectedRoots == []) "--explicit-roots"} ${lib.escapeShellArgs selectedRoots} > plan.json
-    '';
-    expression = ''
-      import ${./classpath.nix} {
-        pkgs = import ${nixpkgsSource} { system = "${pkgs.stdenv.hostPlatform.system}"; };
-        jars = builtins.attrValues (builtins.fromJSON (builtins.readFile ./plan.json));
-      }
-    '';
-  };
+
+  classpathFor = selectedRoots: let
+    planner = builtins.derivation {
+      name = "drvjava-classpath.drv";
+      inherit system;
+      builder = "${jdkSlim}/bin/java";
+      args = [ "-cp" "${toolJar}/drvjava.jar" "DrvJava" "plan" ];
+      CONFIG_JSON = builtins.toJSON {
+        lockSource = "${lockSource}";
+        inherit lockFile memberLock system;
+        roots = selectedRoots;
+        explicitRoots = testRoots != [] && selectedRoots == [];
+        jdk = "${jdkSlim}";
+        tool = "${toolJar}";
+      };
+      requiredSystemFeatures = [ "recursive-nix" ];
+      __contentAddressed = true;
+      outputHashMode = "text";
+      outputHashAlgo = "sha256";
+    };
+  in builtins.outputOf planner.outPath "out";
+
   classpath = classpathFor roots;
   testClasspath = if testRoots == [] then classpath else classpathFor (roots ++ testRoots);
-  compile = ''
-    compile() {
-      local dest=$1 cp=$2
-      shift 2
-      mkdir -p "$dest"
-      local -a files=()
-      for path in "$@"; do
-        if [[ -d "$path" ]]; then
-          while IFS= read -r -d "" f; do files+=("$f"); done < <(find "$path" -type f -name '*.java' -print0 | sort -z)
-        elif [[ -f "$path" ]]; then
-          files+=("$path")
-        fi
-      done
-      if (( ''${#files[@]} )); then
-        javac -encoding UTF-8 -cp "$cp" -d "$dest" "''${files[@]}"
-      fi
-    }
-    resources() {
-      local dest=$1
-      shift
-      for path in "$@"; do
-        if [[ -d "$path" ]]; then cp -r "$path"/. "$dest/"; fi
-      done
-    }
-  '';
-  compileClasses = { name, dirs, resourcePaths, dependencyPath, requiredSources ? [] }:
-    pkgs.stdenvNoCC.mkDerivation {
-      inherit name;
+
+  compileClasses = { name, dirs, resourcePaths, classpathDir, extraCp ? "", requiredSources ? [] }:
+    builtins.derivation {
+      inherit name system;
+      builder = "${jdkSlim}/bin/java";
+      args = [ "-cp" "${toolJar}/drvjava.jar" "DrvJava" "compile" ];
+      SRC = "${selectFiles "drvjava-source" (dirs ++ resourcePaths)}";
+      COMPILE_JSON = builtins.toJSON {
+        inherit dirs resourcePaths requiredSources extraCp;
+        classpathFile = "${classpathDir}/classpath";
+      };
       __contentAddressed = true;
-      src = selectFiles "drvjava-source" (dirs ++ resourcePaths);
-      nativeBuildInputs = [ jdk ];
-      dontConfigure = true;
-      dontFixup = true;
-      dontInstall = true;
-      buildPhase = ''
-        ${compile}
-        for f in ${lib.escapeShellArgs requiredSources}; do
-          if [[ ! -f "$f" ]]; then echo "missing Java source: $f" >&2; exit 1; fi
-        done
-        compile "$out" "${dependencyPath}" ${lib.escapeShellArgs dirs}
-        resources "$out" ${lib.escapeShellArgs resourcePaths}
-      '';
+      outputHashMode = "recursive";
+      outputHashAlgo = "sha256";
     };
+
   mainClasses = compileClasses {
     name = "drvjava-main-classes";
     dirs = mainSources;
     resourcePaths = resourceDirs;
-    dependencyPath = "$(cat ${classpath}/classpath)";
+    classpathDir = classpath;
     requiredSources = sources;
   };
-  testDependencies = "${mainClasses}:$(cat ${testClasspath}/classpath)";
+
   testClasses = compileClasses {
     name = "drvjava-test-classes";
     dirs = testDirs;
     resourcePaths = testResourceDirs;
-    dependencyPath = testDependencies;
+    classpathDir = testClasspath;
+    extraCp = "${mainClasses}";
   };
-in if test then pkgs.runCommand "drvjava-test" {
+in if test then mkOverridableDrv {
+  name = "drvjava-test";
+  inherit system;
+  builder = "${jdkSlim}/bin/java";
+  args = [ "-cp" "${toolJar}/drvjava.jar" "DrvJava" "test" ];
+  TEST_CLASSES = "${testClasses}";
+  MAIN_CLASSES = "${mainClasses}";
+  TEST_CLASSPATH_DIR = testClasspath;
+  JDK = "${jdkSlim}";
+  TEST_JSON = builtins.toJSON { inherit testClass testArgs; };
   __contentAddressed = true;
-  nativeBuildInputs = [ jdk ];
-} ''
-  cd "$TMPDIR"
-  java -ea -cp "${testClasses}:${testDependencies}" ${if testClass == null
-    then "org.junit.platform.console.ConsoleLauncher execute --scan-class-path --fail-if-no-tests"
-    else lib.escapeShellArg testClass} ${lib.escapeShellArgs testArgs}
-  touch "$out"
-'' else pkgs.runCommand "drvjava-build" {
+  outputHashMode = "recursive";
+  outputHashAlgo = "sha256";
+} else mkOverridableDrv {
+  name = "drvjava-build";
+  inherit system;
+  builder = "${jdkSlim}/bin/java";
+  args = [ "-cp" "${toolJar}/drvjava.jar" "DrvJava" "build" ];
+  CLASSPATH_DIR = classpath;
+  MAIN_CLASSES = "${mainClasses}";
+  JDK = "${jdkSlim}";
+  BASH = "${pkgs.bashNonInteractive}";
+  MAIN_CLASS = if mainClass == null then "" else mainClass;
   __contentAddressed = true;
-  nativeBuildInputs = [ jdk pkgs.makeWrapper ];
-} ''
-  cp=$(cat ${classpath}/classpath)
-  mkdir -p "$out/bin" "$out/lib" "$out/jars"
-  if [[ -d ${classpath}/jars ]]; then
-    rmdir "$out/jars"
-    ln -s ${classpath}/jars "$out/jars"
-  fi
-  jar --create --file "$out/lib/project.jar" --date=1980-01-01T00:00:02Z \
-    ${lib.optionalString (mainClass != null) "--main-class ${lib.escapeShellArg mainClass}"} -C ${mainClasses} .
-  printf '%s' "$out/lib/project.jar''${cp:+:$cp}" > "$out/classpath"
-  makeWrapper ${jdk}/bin/java "$out/bin/drvjava-run" \
-    --add-flag "-cp" --add-flag "$(cat "$out/classpath")" \
-    ${lib.optionalString (mainClass != null) "--add-flag ${lib.escapeShellArg mainClass}"}
-''
+  outputHashMode = "recursive";
+  outputHashAlgo = "sha256";
+}

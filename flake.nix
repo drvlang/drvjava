@@ -8,14 +8,13 @@
     toolSource = {
       root = ./.;
       files = [
-        ./classpath.nix ./package.nix ./planner.nix ./planner/Cargo.toml
-        ./planner/Cargo.lock ./planner/src
+        ./DrvJava.java ./package.nix ./planner.nix
       ];
       benchmarkFiles = [ ./benchmarks/default.nix ./benchmarks/source.nix ];
     };
     name = "drvjava";
-    mkPackage = import ./package.nix { inherit drvkit nixpkgs; };
-    mkTest = import ./package.nix { inherit drvkit nixpkgs; test = true; };
+    mkPackage = import ./package.nix {};
+    mkTest = import ./package.nix { test = true; };
     selectTarget = { src, name, target }: { inherit src; projectDir = target; };
     extraChecks = system: let
       pkgs = nixpkgs.legacyPackages.${system};
